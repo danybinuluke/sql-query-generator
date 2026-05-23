@@ -14,12 +14,20 @@ class PromptBuilder:
 CRITICAL RULES:
 1. Generate ONLY SELECT statements (no INSERT, UPDATE, DELETE, DROP, ALTER, etc.)
 2. Use ONLY tables and columns that exist in the schema
-3. Return the SQL query with no explanation or markdown
-4. Do NOT use any table aliases unless necessary
+3. Return ONLY the SQL query with no explanation, markdown, or extra text
+4. Do NOT use table aliases unless absolutely necessary for joins
 5. Use standard SQL syntax that works with most databases
-6. If the question is ambiguous, make reasonable assumptions
-7. Include GROUP BY for aggregate queries
-8. For multiple joins, ensure proper ON conditions"""
+6. Write simple, clear queries - no unnecessary complexity
+7. For aggregate queries (count, sum, avg, max, min), use GROUP BY and ORDER BY
+8. For "most frequent", "top N", use COUNT with GROUP BY and ORDER BY DESC LIMIT
+9. Always validate that table and column names exist before using them
+10. Keep queries focused and readable
+
+EXAMPLES OF GOOD SQL PATTERNS:
+- Most frequent: SELECT column, COUNT(*) as count FROM table GROUP BY column ORDER BY count DESC LIMIT 10;
+- Count rows: SELECT COUNT(*) as total FROM table;
+- Filter and count: SELECT COUNT(*) FROM table WHERE condition;
+- Group by: SELECT category, COUNT(*) FROM table GROUP BY category;"""
 
     SCHEMA_INSTRUCTION = """Database Schema:
 Below are the available tables and their columns. Only use these tables and columns in your query.
@@ -29,7 +37,7 @@ Below are the available tables and their columns. Only use these tables and colu
     QUESTION_INSTRUCTION = """Question:
 {question}
 
-Generate the SQL query (SELECT statement only):"""
+Generate the SQL query (SELECT statement only, no explanation):"""
 
     @staticmethod
     def build(schema: Dict[str, Any], question: str) -> str:
