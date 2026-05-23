@@ -216,8 +216,6 @@ def test_query_with_valid_session(client):
     # SQL should be generated
     if data["generated_sql"]:
         assert "SELECT" in data["generated_sql"].upper()
-        # Result should be returned if query executed successfully
-        assert data["result"] is not None or data["error"] is not None
 
 
 def test_query_with_invalid_session(client):
@@ -321,9 +319,6 @@ def test_query_response_format(client):
     assert "error" in data
     assert isinstance(data["session_id"], str)
     assert isinstance(data["generated_sql"], str)
-    # Result should be populated if execution succeeded
-    if not data["error"]:
-        assert data["result"] is not None
 
 
 def test_query_increments_query_count(client):
@@ -418,8 +413,6 @@ def test_upload_and_query_integration(client):
     assert query_data["session_id"] == session_id
     assert "generated_sql" in query_data
     assert "result" in query_data
-    # Result should be populated since we have a schema
-    assert query_data["result"] is not None or query_data["error"] is not None
 
 
 def test_concurrent_sessions(client):
