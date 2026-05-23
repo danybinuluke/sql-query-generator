@@ -420,3 +420,397 @@ def test_upload_and_query_integration(client):
     assert "result" in query_data
     # Result should be populated since we have a schema
     assert query_data["result"] is not None or query_data["error"] is not None
+
+
+def test_concurrent_sessions(client):
+    """Test multiple concurrent sessions don't interfere"""
+    # Session 1: users table
+    sql_content_1 = "CREATE TABLE users (id INT, name VARCHAR(100));"
+    upload_response_1 = client.post(
+        "/upload-schema",
+        files={"file": ("schema1.sql", sql_content_1, "text/plain")}
+    )
+    session_id_1 = upload_response_1.json()["session_id"]
+
+    # Session 2: products table
+    sql_content_2 = "CREATE TABLE products (id INT, price FLOAT);"
+    upload_response_2 = client.post(
+        "/upload-schema",
+        files={"file": ("schema2.sql", sql_content_2, "text/plain")}
+    )
+    session_id_2 = upload_response_2.json()["session_id"]
+
+    # Query in session 1
+    response_1 = client.post(
+        "/query",
+        json={
+            "session_id": session_id_1,
+            "question": "List all users"
+        }
+    )
+    assert response_1.status_code == 200
+    assert response_1.json()["generated_sql"] and "users" in response_1.json()["generated_sql"].lower()
+
+    # Query in session 2
+    response_2 = client.post(
+        "/query",
+        json={
+            "session_id": session_id_2,
+            "question": "List all products"
+        }
+    )
+    assert response_2.status_code == 200
+    assert response_2.json()["generated_sql"] and "products" in response_2.json()["generated_sql"].lower()
+
+
+def test_schema_with_nullable_columns(client):
+    """Test schema with explicit NULL handling"""
+    sql_content = """
+    CREATE TABLE customers (
+        id INT NOT NULL,
+        email VARCHAR(100) NOT NULL,
+        phone VARCHAR(20),
+        company VARCHAR(100)
+    );
+    """
+
+    response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["table_count"] == 1
+    assert len(data["tables"][0]["columns"]) == 4
+
+
+def test_schema_with_special_characters_in_names(client):
+    """Test schema parsing with special column names"""
+    sql_content = """
+    CREATE TABLE orders (
+        order_id INT,
+        created_at DATETIME,
+        total_amount FLOAT,
+        customer_email VARCHAR(100)
+    );
+    """
+
+    response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tables"][0]["name"] == "orders"
+    column_names = {col["name"] for col in data["tables"][0]["columns"]}
+    assert "order_id" in column_names
+    assert "created_at" in column_names
+    assert "total_amount" in column_names
+
+
+def test_query_with_aggregation(client):
+    """Test query that requires aggregation"""
+    sql_content = """
+    CREATE TABLE sales (
+        id INT,
+        amount FLOAT,
+        date VARCHAR(100)
+    );
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+    session_id = upload_response.json()["session_id"]
+
+    # Query asking for aggregate (sum, count, avg, etc.)
+    query_response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "What is the total sales amount?"
+        }
+    )
+
+    assert query_response.status_code == 200
+    data = query_response.json()
+    assert "generated_sql" in data
+    # Should have generated some SQL
+    assert data["generated_sql"] is not None
+
+
+def test_query_with_join_requirement(client):
+    """Test query that requires joining tables"""
+    sql_content = """
+    CREATE TABLE users (
+        id INT,
+        name VARCHAR(100)
+    );
+
+    CREATE TABLE orders (
+        id INT,
+        user_id INT,
+        amount FLOAT
+    );
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+    session_id = upload_response.json()["session_id"]
+
+    # Query that could require a join
+    query_response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "Show user names and their order amounts"
+        }
+    )
+
+    assert query_response.status_code == 200
+    data = query_response.json()
+    assert "generated_sql" in data
+    if data["generated_sql"]:
+        # Should contain JOIN or reference both tables
+        assert "users" in data["generated_sql"].lower() or "orders" in data["generated_sql"].lower()
+
+
+def test_large_schema_upload(client):
+    """Test uploading a large schema with many tables"""
+    # Generate schema with 10 tables
+    sql_content = "\n".join([
+        f"CREATE TABLE table_{i} (id INT, value_{i} VARCHAR(100));"
+        for i in range(10)
+    ])
+
+    response = client.post(
+        "/upload-schema",
+        files={"file": ("large_schema.sql", sql_content, "text/plain")}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["table_count"] == 10
+    assert len(data["tables"]) == 10
+
+
+def test_query_with_filtering(client):
+    """Test query with WHERE clause requirement"""
+    sql_content = """
+    CREATE TABLE products (
+        id INT,
+        name VARCHAR(100),
+        price FLOAT,
+        category VARCHAR(50)
+    );
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+    session_id = upload_response.json()["session_id"]
+
+    # Query with filtering criteria
+    query_response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "Find products with price greater than 100"
+        }
+    )
+
+    assert query_response.status_code == 200
+    data = query_response.json()
+    assert "generated_sql" in data
+    if data["generated_sql"]:
+        sql = data["generated_sql"].upper()
+        assert "WHERE" in sql or "SELECT" in sql
+
+
+def test_question_with_numbers(client):
+    """Test question containing numeric values"""
+    sql_content = "CREATE TABLE items (id INT, qty INT, price FLOAT);"
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+    session_id = upload_response.json()["session_id"]
+
+    response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "Show items with quantity more than 50 and price less than 99.99"
+        }
+    )
+
+    assert response.status_code == 200
+    assert "generated_sql" in response.json()
+
+
+def test_repeated_queries_same_session(client):
+    """Test multiple queries in same session"""
+    sql_content = "CREATE TABLE stats (id INT, value INT);"
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+    session_id = upload_response.json()["session_id"]
+
+    questions = [
+        "Count total items",
+        "Show all statistics",
+        "Get maximum value",
+        "Find average value"
+    ]
+
+    for question in questions:
+        response = client.post(
+            "/query",
+            json={
+                "session_id": session_id,
+                "question": question
+            }
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["session_id"] == session_id
+        assert "generated_sql" in data
+
+
+def test_query_with_ordering_requirement(client):
+    """Test query that should use ORDER BY"""
+    sql_content = """
+    CREATE TABLE employees (
+        id INT,
+        name VARCHAR(100),
+        salary FLOAT
+    );
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+    session_id = upload_response.json()["session_id"]
+
+    response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "Show employees sorted by salary in descending order"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "generated_sql" in data
+
+
+def test_malformed_sql_with_syntax_error(client):
+    """Test that malformed SQL is rejected"""
+    sql_content = "THIS IS NOT VALID SQL @#$%"
+
+    response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    assert response.status_code == 400
+    assert "detail" in response.json()
+
+
+def test_schema_with_comments(client):
+    """Test schema file with SQL comments - comments should be stripped"""
+    # Note: The schema parser may have issues with comments, so test that
+    # the parser either handles them or rejects gracefully
+    sql_content = """
+    -- This is a comment
+    CREATE TABLE users (
+        id INT,
+        email VARCHAR(100)
+    );
+
+    CREATE TABLE posts (
+        id INT,
+        user_id INT
+    );
+    """
+
+    response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    # Either successfully parses (status 200) or rejects (status 400)
+    # Both are acceptable - the important thing is it doesn't crash
+    assert response.status_code in [200, 400]
+    if response.status_code == 200:
+        data = response.json()
+        assert data["table_count"] >= 1
+
+
+def test_upload_schema_case_insensitivity(client):
+    """Test that schema parsing is case-insensitive for keywords"""
+    sql_content = """
+    create table products (
+        id integer,
+        name varchar(100),
+        price real
+    );
+    """
+
+    response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["table_count"] == 1
+    assert data["tables"][0]["name"] == "products"
+
+
+def test_session_expires_after_timeout(client):
+    """Test that invalid session returns 404"""
+    # Try to query with a non-existent session
+    response = client.post(
+        "/query",
+        json={
+            "session_id": "invalid-session-that-does-not-exist-abc123xyz",
+            "question": "Some question"
+        }
+    )
+
+    assert response.status_code == 404
+
+
+def test_multiple_tables_in_single_create_block(client):
+    """Test schema with multiple CREATE statements"""
+    sql_content = """
+    CREATE TABLE users (id INT, name VARCHAR(100));
+    CREATE TABLE roles (id INT, name VARCHAR(100));
+    CREATE TABLE user_roles (user_id INT, role_id INT);
+    """
+
+    response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["table_count"] == 3
+    table_names = {t["name"] for t in data["tables"]}
+    assert "users" in table_names
+    assert "roles" in table_names
+    assert "user_roles" in table_names

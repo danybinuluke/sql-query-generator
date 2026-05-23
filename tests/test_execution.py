@@ -317,3 +317,445 @@ def test_get_all_tables(engine):
     assert isinstance(tables, list)
     assert "users" in tables
     assert "orders" in tables
+
+
+def test_decimal_data_type():
+    """Test query with DECIMAL data type"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE prices (
+                id INT,
+                product_name VARCHAR(100),
+                price DECIMAL(10, 2)
+            );
+        """)
+
+        eng.execute("INSERT INTO prices VALUES (1, 'Widget', 19.99);")
+        eng.execute("INSERT INTO prices VALUES (2, 'Gadget', 99.99);")
+
+        success, result, error = eng.execute("SELECT product_name, price FROM prices ORDER BY price;")
+
+        assert success is True
+        assert len(result) == 2
+        assert result[0]["product_name"] == "Widget"
+        # SQLite stores DECIMAL as REAL, so compare as floats
+        assert abs(float(result[0]["price"]) - 19.99) < 0.01
+
+
+def test_date_data_type():
+    """Test query with DATE data type"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE events (
+                id INT,
+                event_name VARCHAR(100),
+                event_date DATE
+            );
+        """)
+
+        eng.execute("INSERT INTO events VALUES (1, 'Meeting', '2025-03-15');")
+        eng.execute("INSERT INTO events VALUES (2, 'Conference', '2025-04-20');")
+
+        success, result, error = eng.execute("SELECT event_name, event_date FROM events ORDER BY event_date;")
+
+        assert success is True
+        assert len(result) == 2
+        assert result[0]["event_name"] == "Meeting"
+        assert result[0]["event_date"] == "2025-03-15"
+
+
+def test_null_values_in_aggregates():
+    """Test aggregate functions with NULL values"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE sales (
+                id INT,
+                amount FLOAT,
+                commission FLOAT
+            );
+        """)
+
+        eng.execute("INSERT INTO sales VALUES (1, 100.0, 10.0);")
+        eng.execute("INSERT INTO sales VALUES (2, 200.0, NULL);")
+        eng.execute("INSERT INTO sales VALUES (3, 150.0, 15.0);")
+
+        success, result, error = eng.execute("""
+            SELECT
+                COUNT(*) as total_rows,
+                COUNT(commission) as non_null_commission,
+                SUM(commission) as total_commission
+            FROM sales;
+        """)
+
+        assert success is True
+        assert result[0]["total_rows"] == 3
+        assert result[0]["non_null_commission"] == 2
+        assert result[0]["total_commission"] == 25.0
+
+
+def test_null_in_where_clause():
+    """Test NULL handling in WHERE clause"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE products (
+                id INT,
+                name VARCHAR(100),
+                discontinued INT
+            );
+        """)
+
+        eng.execute("INSERT INTO products VALUES (1, 'Product A', 0);")
+        eng.execute("INSERT INTO products VALUES (2, 'Product B', 1);")
+        eng.execute("INSERT INTO products VALUES (3, 'Product C', NULL);")
+
+        success, result, error = eng.execute("SELECT name FROM products WHERE discontinued IS NULL;")
+
+        assert success is True
+        assert len(result) == 1
+        assert result[0]["name"] == "Product C"
+
+
+def test_self_join_query():
+    """Test self-join with table aliases"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE employees (
+                id INT,
+                name VARCHAR(100),
+                manager_id INT
+            );
+        """)
+
+        eng.execute("INSERT INTO employees VALUES (1, 'Alice', NULL);")
+        eng.execute("INSERT INTO employees VALUES (2, 'Bob', 1);")
+        eng.execute("INSERT INTO employees VALUES (3, 'Charlie', 1);")
+
+        success, result, error = eng.execute("""
+            SELECT e.name as employee, m.name as manager
+            FROM employees e
+            LEFT JOIN employees m ON e.manager_id = m.id
+            ORDER BY e.name;
+        """)
+
+        assert success is True
+        assert len(result) == 3
+        assert result[0]["employee"] == "Alice"
+        assert result[0]["manager"] is None
+        assert result[1]["employee"] == "Bob"
+        assert result[1]["manager"] == "Alice"
+
+
+def test_multi_way_join():
+    """Test joining three tables"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE categories (id INT, name VARCHAR(100));
+            CREATE TABLE products (id INT, category_id INT, name VARCHAR(100), price FLOAT);
+            CREATE TABLE orders (id INT, product_id INT, quantity INT);
+        """)
+
+        eng.execute("INSERT INTO categories VALUES (1, 'Electronics');")
+        eng.execute("INSERT INTO products VALUES (1, 1, 'Laptop', 999.99);")
+        eng.execute("INSERT INTO orders VALUES (1, 1, 2);")
+
+        success, result, error = eng.execute("""
+            SELECT c.name as category, p.name as product, o.quantity
+            FROM orders o
+            JOIN products p ON o.product_id = p.id
+            JOIN categories c ON p.category_id = c.id;
+        """)
+
+        assert success is True
+        assert len(result) == 1
+        assert result[0]["category"] == "Electronics"
+        assert result[0]["product"] == "Laptop"
+        assert result[0]["quantity"] == 2
+
+
+def test_outer_join_variations():
+    """Test different types of OUTER JOINs"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE departments (id INT, name VARCHAR(100));
+            CREATE TABLE staff (id INT, department_id INT, name VARCHAR(100));
+        """)
+
+        eng.execute("INSERT INTO departments VALUES (1, 'HR');")
+        eng.execute("INSERT INTO departments VALUES (2, 'IT');")
+        eng.execute("INSERT INTO staff VALUES (1, 1, 'John');")
+
+        success, result, error = eng.execute("""
+            SELECT d.name as department, s.name as staff
+            FROM departments d
+            LEFT JOIN staff s ON d.id = s.department_id
+            ORDER BY d.name;
+        """)
+
+        assert success is True
+        assert len(result) == 2
+        assert result[0]["department"] == "HR"
+        assert result[0]["staff"] == "John"
+        assert result[1]["department"] == "IT"
+        assert result[1]["staff"] is None
+
+
+def test_having_clause():
+    """Test HAVING clause with GROUP BY"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE transactions (
+                id INT,
+                customer_id INT,
+                amount FLOAT
+            );
+        """)
+
+        eng.execute("INSERT INTO transactions VALUES (1, 1, 50.0);")
+        eng.execute("INSERT INTO transactions VALUES (2, 1, 75.0);")
+        eng.execute("INSERT INTO transactions VALUES (3, 2, 100.0);")
+
+        success, result, error = eng.execute("""
+            SELECT customer_id, SUM(amount) as total
+            FROM transactions
+            GROUP BY customer_id
+            HAVING SUM(amount) > 100;
+        """)
+
+        assert success is True
+        assert len(result) == 1
+        assert result[0]["customer_id"] == 1
+        assert result[0]["total"] == 125.0
+
+
+def test_subquery_in_where():
+    """Test subquery in WHERE clause"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE test_users (id INT, name VARCHAR(100));
+            CREATE TABLE test_orders (id INT, user_id INT, amount FLOAT);
+        """)
+
+        eng.execute("INSERT INTO test_users VALUES (1, 'Alice'), (2, 'Bob');")
+        eng.execute("INSERT INTO test_orders VALUES (1, 1, 100.0), (2, 1, 200.0), (3, 2, 50.0);")
+
+        success, result, error = eng.execute("""
+            SELECT name FROM test_users
+            WHERE id IN (SELECT user_id FROM test_orders WHERE amount > 100);
+        """)
+
+        assert success is True
+        assert len(result) == 1
+        assert result[0]["name"] == "Alice"
+
+
+def test_distinct_with_null():
+    """Test DISTINCT with NULL values"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE tags (id INT, item_id INT, tag_name VARCHAR(100));
+        """)
+
+        eng.execute("INSERT INTO tags VALUES (1, 1, 'popular');")
+        eng.execute("INSERT INTO tags VALUES (2, 1, 'popular');")
+        eng.execute("INSERT INTO tags VALUES (3, 2, NULL);")
+        eng.execute("INSERT INTO tags VALUES (4, 2, NULL);")
+
+        success, result, error = eng.execute("SELECT DISTINCT tag_name FROM tags ORDER BY tag_name;")
+
+        assert success is True
+        assert len(result) == 2
+        # DISTINCT includes NULL as a distinct value
+        assert result[0]["tag_name"] is None or result[0]["tag_name"] == "popular"
+
+
+def test_case_expression_aggregation():
+    """Test CASE expression with aggregates"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE survey_responses (
+                id INT,
+                response VARCHAR(10)
+            );
+        """)
+
+        eng.execute("INSERT INTO survey_responses VALUES (1, 'yes'), (2, 'no'), (3, 'yes'), (4, 'maybe');")
+
+        success, result, error = eng.execute("""
+            SELECT
+                SUM(CASE WHEN response = 'yes' THEN 1 ELSE 0 END) as yes_count,
+                SUM(CASE WHEN response = 'no' THEN 1 ELSE 0 END) as no_count
+            FROM survey_responses;
+        """)
+
+        assert success is True
+        assert result[0]["yes_count"] == 2
+        assert result[0]["no_count"] == 1
+
+
+def test_window_function_alternative():
+    """Test ranking with aggregates (SQL alternative to window functions)"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE rankings (
+                category VARCHAR(100),
+                score INT
+            );
+        """)
+
+        eng.execute("INSERT INTO rankings VALUES ('A', 100), ('A', 95), ('B', 110), ('B', 105);")
+
+        success, result, error = eng.execute("""
+            SELECT category, MAX(score) as highest_score
+            FROM rankings
+            GROUP BY category
+            ORDER BY highest_score DESC;
+        """)
+
+        assert success is True
+        assert len(result) == 2
+        assert result[0]["highest_score"] == 110
+
+
+def test_string_functions():
+    """Test string manipulation in queries"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE test_users (
+                id INT,
+                first_name VARCHAR(50),
+                last_name VARCHAR(50)
+            );
+        """)
+
+        eng.execute("INSERT INTO test_users VALUES (1, 'John', 'Doe'), (2, 'Jane', 'Smith');")
+
+        success, result, error = eng.execute("""
+            SELECT id, first_name || ' ' || last_name as full_name
+            FROM test_users
+            ORDER BY id;
+        """)
+
+        assert success is True
+        assert result[0]["full_name"] == "John Doe"
+        assert result[1]["full_name"] == "Jane Smith"
+
+
+def test_large_result_set():
+    """Test query returning large number of rows"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE numbers (id INT, value INT);
+        """)
+
+        # Insert 1000 rows
+        for i in range(1000):
+            eng.execute(f"INSERT INTO numbers VALUES ({i}, {i * 2});")
+
+        success, result, error = eng.execute("SELECT COUNT(*) as total FROM numbers;")
+
+        assert success is True
+        assert result[0]["total"] == 1000
+
+
+def test_large_result_with_limit():
+    """Test LIMIT on large result set"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE items (id INT);
+        """)
+
+        for i in range(500):
+            eng.execute(f"INSERT INTO items VALUES ({i});")
+
+        success, result, error = eng.execute("SELECT id FROM items LIMIT 10 OFFSET 50;")
+
+        assert success is True
+        assert len(result) == 10
+        assert result[0]["id"] == 50
+
+
+def test_empty_schema_in_memory():
+    """Test querying empty tables"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE empty_table (id INT, name VARCHAR(100));
+        """)
+
+        success, result, error = eng.execute("SELECT * FROM empty_table;")
+
+        assert success is True
+        assert len(result) == 0
+
+
+def test_complex_where_conditions():
+    """Test complex WHERE clauses with AND/OR"""
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE test_products (
+                id INT,
+                name VARCHAR(100),
+                price FLOAT,
+                stock INT,
+                category VARCHAR(50)
+            );
+        """)
+
+        eng.execute("INSERT INTO test_products VALUES (1, 'Item A', 10.0, 5, 'X');")
+        eng.execute("INSERT INTO test_products VALUES (2, 'Item B', 20.0, 15, 'Y');")
+        eng.execute("INSERT INTO test_products VALUES (3, 'Item C', 15.0, 3, 'X');")
+
+        success, result, error = eng.execute("""
+            SELECT name FROM test_products
+            WHERE (price > 12 AND category = 'X') OR (stock > 10 AND category = 'Y')
+            ORDER BY name;
+        """)
+
+        assert success is True
+        assert len(result) == 2
+        assert result[0]["name"] == "Item B"
+        assert result[1]["name"] == "Item C"
+
+
+def test_transaction_isolation(engine):
+    """Test that each ExecutionEngine instance is isolated"""
+    engine.load_schema("""
+        CREATE TABLE state (id INT, value INT);
+    """)
+
+    engine.execute("INSERT INTO state VALUES (1, 100);")
+
+    # Create new engine instance - should have separate in-memory database
+    with ExecutionEngine(":memory:") as engine2:
+        engine2.load_schema("""
+            CREATE TABLE state (id INT, value INT);
+        """)
+        success, result, error = engine2.execute("SELECT COUNT(*) as count FROM state;")
+
+        assert success is True
+        assert result[0]["count"] == 0  # Different database, no data
+
+
+def test_format_result_with_mixed_types():
+    """Test result formatting with mixed data types"""
+    import json
+    with ExecutionEngine(":memory:") as eng:
+        eng.load_schema("""
+            CREATE TABLE mixed_data (
+                id INT,
+                amount FLOAT,
+                active INT,
+                description VARCHAR(100)
+            );
+        """)
+
+        eng.execute("INSERT INTO mixed_data VALUES (1, 99.99, 1, 'Active item');")
+
+        success, result, error = eng.execute("SELECT * FROM mixed_data;")
+
+        assert success is True
+        formatted_str = eng.format_result(result)
+        formatted = json.loads(formatted_str)
+        assert formatted[0]["id"] == 1
+        assert formatted[0]["amount"] == 99.99
+        assert formatted[0]["active"] == 1
+        assert formatted[0]["description"] == "Active item"
