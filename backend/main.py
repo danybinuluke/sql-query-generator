@@ -7,13 +7,14 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
-from backend.services import SchemaParser, SessionStore, PromptBuilder
+from backend.services import SchemaParser, SessionStore, PromptBuilder, LLMService, SQLValidator
 from backend.models import SchemaUploadResponse, TableSchema, ColumnSchema, QueryRequest, QueryResponse
 
 logger = logging.getLogger(__name__)
 
-# Global session store
+# Global instances
 _session_store: SessionStore = None
+_llm_service: LLMService = None
 
 
 def get_session_store() -> SessionStore:
@@ -25,14 +26,30 @@ def get_session_store() -> SessionStore:
     return _session_store
 
 
+def get_llm_service() -> LLMService:
+    """Get or create LLM service instance"""
+    global _llm_service
+    if _llm_service is None:
+        model_name = os.getenv("LLM_MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+        _llm_service = LLMService(model_name=model_name)
+    return _llm_service
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
     logger.info("🚀 SQLGenie Backend Starting...")
     # Initialize session store
     get_session_store()
+    # Load LLM model
+    llm = get_llm_service()
+    if llm.load_model():
+        logger.info("✅ LLM Model loaded successfully")
+    else:
+        logger.warning("⚠️ Failed to load LLM model - SQL generation will not work")
     yield
     logger.info("🛑 SQLGenie Backend Shutting Down...")
+    llm.unload_model()
 
 
 app = FastAPI(
@@ -187,19 +204,19 @@ async def upload_schema(file: UploadFile = File(...)) -> SchemaUploadResponse:
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest) -> QueryResponse:
     """
-    Generate SQL prompt from natural language question.
+    Generate SQL from natural language question using LLM.
 
     Takes a session ID and natural language question, retrieves the stored schema,
-    builds a structured prompt for LLM, and returns the prompt.
+    builds a structured prompt for LLM, generates SQL, validates it, and returns response.
 
     Args:
         request: QueryRequest with session_id and question
 
     Returns:
-        QueryResponse with generated prompt and session info
+        QueryResponse with generated SQL and session info
 
     Raises:
-        HTTPException: If session not found or prompt generation fails
+        HTTPException: If session not found or generation fails
     """
     session_id = request.session_id
     question = request.question
@@ -237,14 +254,43 @@ async def query(request: QueryRequest) -> QueryResponse:
             detail=f"Error building prompt: {str(e)}"
         )
 
+    # Generate SQL using LLM
+    llm_service = get_llm_service()
+    if not llm_service.is_loaded():
+        logger.error("LLM model not loaded")
+        raise HTTPException(
+            status_code=503,
+            detail="LLM service not available"
+        )
+
+    success, generated_sql, llm_error = llm_service.generate_sql(prompt)
+
+    if not success or not generated_sql:
+        logger.error(f"SQL generation failed: {llm_error}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate SQL: {llm_error}"
+        )
+
+    # Validate generated SQL
+    validator = SQLValidator()
+    is_valid, validation_error = validator.validate(generated_sql)
+
+    if not is_valid:
+        logger.warning(f"Generated SQL failed validation: {validation_error}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Generated SQL is not safe: {validation_error}"
+        )
+
     # Increment query count
     session_store.increment_query_count(session_id)
 
-    logger.info(f"Prompt generated successfully for session {session_id}")
+    logger.info(f"SQL generated and validated successfully for session {session_id}")
 
     return QueryResponse(
         session_id=session_id,
-        generated_sql="",  # Will be populated by LLM in TASK 8
+        generated_sql=generated_sql,
         result=None,
         error=None
     )

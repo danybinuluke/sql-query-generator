@@ -2,12 +2,14 @@
 
 import pytest
 from starlette.testclient import TestClient
+from unittest.mock import patch, MagicMock
 from backend.main import app
 
 
 @pytest.fixture
 def client():
-    """Create test client"""
+    """Create test client with mocked LLM"""
+    # The LLM is automatically mocked by conftest.py
     return TestClient(app)
 
 
@@ -209,6 +211,10 @@ def test_query_with_valid_session(client):
     assert query_response.status_code == 200
     data = query_response.json()
     assert data["session_id"] == session_id
+    assert "generated_sql" in data
+    # SQL should be generated if LLM is available
+    if data["generated_sql"]:
+        assert "SELECT" in data["generated_sql"].upper()
 
 
 def test_query_with_invalid_session(client):
@@ -312,6 +318,9 @@ def test_query_response_format(client):
     assert "error" in data
     assert isinstance(data["session_id"], str)
     assert isinstance(data["generated_sql"], str)
+    # generated_sql should not be empty if LLM is loaded
+    if data["generated_sql"]:
+        assert "SELECT" in data["generated_sql"].upper() or "WITH" in data["generated_sql"].upper()
 
 
 def test_query_increments_query_count(client):
