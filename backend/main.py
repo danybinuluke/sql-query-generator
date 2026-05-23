@@ -7,7 +7,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
-from backend.services import SchemaParser, SessionStore, PromptBuilder, LLMService, SQLValidator, ExecutionEngine
+from backend.services import SchemaParser, SessionStore, PromptBuilder, LLMService, SQLValidator
 from backend.models import SchemaUploadResponse, TableSchema, ColumnSchema, QueryRequest, QueryResponse
 
 logger = logging.getLogger(__name__)
@@ -33,17 +33,6 @@ def get_llm_service() -> LLMService:
         model_name = os.getenv("LLM_MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
         _llm_service = LLMService(model_name=model_name)
     return _llm_service
-
-
-def schema_dict_to_sql(schema: dict) -> str:
-    """Convert parsed schema dict to CREATE TABLE statements"""
-    create_statements = []
-    for table_name, table_info in schema.items():
-        columns = table_info.get("columns", [])
-        col_defs = ", ".join([f"{col['name']} {col['type']}" for col in columns])
-        create_sql = f"CREATE TABLE {table_name} ({col_defs});"
-        create_statements.append(create_sql)
-    return "\n".join(create_statements)
 
 
 @asynccontextmanager
@@ -215,19 +204,19 @@ async def upload_schema(file: UploadFile = File(...)) -> SchemaUploadResponse:
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest) -> QueryResponse:
     """
-    Generate SQL from natural language question using LLM and execute it.
+    Generate SQL from natural language question using LLM.
 
     Takes a session ID and natural language question, retrieves the stored schema,
-    builds a structured prompt for LLM, generates SQL, validates it, and executes it.
+    builds a structured prompt for LLM, and generates SQL.
 
     Args:
         request: QueryRequest with session_id and question
 
     Returns:
-        QueryResponse with generated SQL, execution result, and session info
+        QueryResponse with generated SQL
 
     Raises:
-        HTTPException: If session not found or execution fails
+        HTTPException: If session not found or generation fails
     """
     session_id = request.session_id
     question = request.question
@@ -294,51 +283,15 @@ async def query(request: QueryRequest) -> QueryResponse:
             detail=f"Generated SQL is not safe: {validation_error}"
         )
 
-    # Execute the generated SQL
-    try:
-        with ExecutionEngine(":memory:") as engine:
-            # Load schema into execution engine
-            schema_sql = schema_dict_to_sql(schema)
-            success, schema_error = engine.load_schema(schema_sql)
-            if not success:
-                logger.error(f"Failed to load schema: {schema_error}")
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to prepare database for execution"
-                )
-
-            # Execute the query
-            exec_success, result, exec_error = engine.execute(generated_sql)
-
-            if not exec_success:
-                logger.warning(f"Query execution failed: {exec_error}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Query execution failed: {exec_error}"
-                )
-
-            # Format result as JSON
-            result_json = engine.format_result(result)
-            logger.info(f"Query executed successfully, returned {len(result) if isinstance(result, list) else 1} rows")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error during execution: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unexpected error during execution: {str(e)}"
-        )
-
     # Increment query count
     session_store.increment_query_count(session_id)
 
-    logger.info(f"Query completed successfully for session {session_id}")
+    logger.info(f"SQL generated successfully for session {session_id}")
 
     return QueryResponse(
         session_id=session_id,
         generated_sql=generated_sql,
-        result=result,
+        result=None,
         error=None
     )
 
