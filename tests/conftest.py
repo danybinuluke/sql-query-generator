@@ -36,8 +36,15 @@ def mock_llm_generation(request, monkeypatch):
     from backend.services import LLMService
 
     def mock_generate(self, prompt, max_tokens=256):
-        """Mock SQL generation that returns valid SQL"""
-        return True, "SELECT * FROM users;", None
+        """Mock SQL generation that extracts table name from prompt"""
+        # Extract a table name from the prompt to make SQL that works
+        import re
+        table_match = re.search(r"Table:\s*(\w+)", prompt, re.IGNORECASE)
+        if table_match:
+            table_name = table_match.group(1)
+            return True, f"SELECT * FROM {table_name};", None
+        # Fallback to COUNT query
+        return True, "SELECT COUNT(*) as count;", None
 
     def mock_is_loaded(self):
         """Mock model loaded check"""
