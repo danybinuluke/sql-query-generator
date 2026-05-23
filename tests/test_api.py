@@ -178,3 +178,230 @@ def test_upload_schema_response_format(client):
         assert "type" in col
         assert isinstance(col["name"], str)
         assert isinstance(col["type"], str)
+
+
+def test_query_with_valid_session(client):
+    """Test query endpoint with valid session"""
+    # First upload a schema
+    sql_content = """
+    CREATE TABLE users (
+        id INT,
+        email VARCHAR(100)
+    );
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    session_id = upload_response.json()["session_id"]
+
+    # Now send a query
+    query_response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "How many users are there?"
+        }
+    )
+
+    assert query_response.status_code == 200
+    data = query_response.json()
+    assert data["session_id"] == session_id
+
+
+def test_query_with_invalid_session(client):
+    """Test query endpoint with non-existent session"""
+    response = client.post(
+        "/query",
+        json={
+            "session_id": "nonexistent-session-id",
+            "question": "How many users?"
+        }
+    )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_query_with_empty_question(client):
+    """Test query endpoint with empty question"""
+    # Upload schema first
+    sql_content = "CREATE TABLE users (id INT);"
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    session_id = upload_response.json()["session_id"]
+
+    # Send query with empty question
+    response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": ""
+        }
+    )
+
+    assert response.status_code == 400
+    assert "invalid" in response.json()["detail"].lower()
+
+
+def test_query_with_very_long_question(client):
+    """Test query endpoint with excessively long question"""
+    # Upload schema first
+    sql_content = "CREATE TABLE users (id INT);"
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    session_id = upload_response.json()["session_id"]
+
+    # Send query with very long question
+    long_question = "What " * 300  # Very long
+
+    response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": long_question
+        }
+    )
+
+    assert response.status_code == 400
+
+
+def test_query_response_format(client):
+    """Test that query response has correct format"""
+    # Upload schema
+    sql_content = """
+    CREATE TABLE orders (
+        id INT,
+        amount FLOAT
+    );
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    session_id = upload_response.json()["session_id"]
+
+    # Query
+    query_response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "What is the total amount?"
+        }
+    )
+
+    assert query_response.status_code == 200
+    data = query_response.json()
+
+    # Verify response structure
+    assert "session_id" in data
+    assert "generated_sql" in data
+    assert "result" in data
+    assert "error" in data
+    assert isinstance(data["session_id"], str)
+    assert isinstance(data["generated_sql"], str)
+
+
+def test_query_increments_query_count(client):
+    """Test that query increments the query count in session"""
+    # Upload schema
+    sql_content = "CREATE TABLE test (id INT);"
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    session_id = upload_response.json()["session_id"]
+
+    # Send multiple queries
+    for i in range(3):
+        response = client.post(
+            "/query",
+            json={
+                "session_id": session_id,
+                "question": f"Question {i}?"
+            }
+        )
+        assert response.status_code == 200
+
+
+def test_query_with_multiple_tables(client):
+    """Test query with multi-table schema"""
+    sql_content = """
+    CREATE TABLE users (id INT, email VARCHAR(100));
+    CREATE TABLE orders (id INT, user_id INT, amount FLOAT);
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    session_id = upload_response.json()["session_id"]
+
+    query_response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "Join users and orders"
+        }
+    )
+
+    assert query_response.status_code == 200
+    data = query_response.json()
+    assert data["session_id"] == session_id
+
+
+def test_upload_and_query_integration(client):
+    """Test full integration: upload schema and query"""
+    # Upload schema
+    sql_content = """
+    CREATE TABLE products (
+        id INT,
+        name VARCHAR(100),
+        price FLOAT,
+        category VARCHAR(50)
+    );
+    """
+
+    upload_response = client.post(
+        "/upload-schema",
+        files={"file": ("schema.sql", sql_content, "text/plain")}
+    )
+
+    assert upload_response.status_code == 200
+    upload_data = upload_response.json()
+    session_id = upload_data["session_id"]
+
+    # Verify uploaded schema
+    assert upload_data["table_count"] == 1
+    assert upload_data["tables"][0]["name"] == "products"
+
+    # Query the schema
+    query_response = client.post(
+        "/query",
+        json={
+            "session_id": session_id,
+            "question": "Show me all products in the electronics category"
+        }
+    )
+
+    assert query_response.status_code == 200
+    query_data = query_response.json()
+
+    # Verify query response
+    assert query_data["session_id"] == session_id
+    assert query_data["error"] is None

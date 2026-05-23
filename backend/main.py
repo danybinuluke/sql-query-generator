@@ -7,8 +7,8 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 
-from backend.services import SchemaParser, SessionStore
-from backend.models import SchemaUploadResponse, TableSchema, ColumnSchema
+from backend.services import SchemaParser, SessionStore, PromptBuilder
+from backend.models import SchemaUploadResponse, TableSchema, ColumnSchema, QueryRequest, QueryResponse
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +181,72 @@ async def upload_schema(file: UploadFile = File(...)) -> SchemaUploadResponse:
         tables=tables,
         table_count=len(tables),
         message="Schema uploaded successfully"
+    )
+
+
+@app.post("/query", response_model=QueryResponse)
+async def query(request: QueryRequest) -> QueryResponse:
+    """
+    Generate SQL prompt from natural language question.
+
+    Takes a session ID and natural language question, retrieves the stored schema,
+    builds a structured prompt for LLM, and returns the prompt.
+
+    Args:
+        request: QueryRequest with session_id and question
+
+    Returns:
+        QueryResponse with generated prompt and session info
+
+    Raises:
+        HTTPException: If session not found or prompt generation fails
+    """
+    session_id = request.session_id
+    question = request.question
+
+    logger.info(f"Query received: session={session_id}, question={question[:50]}...")
+
+    # Validate question
+    if not PromptBuilder.validate_question(question):
+        raise HTTPException(
+            status_code=400,
+            detail="Question is invalid or too long"
+        )
+
+    # Retrieve session
+    session_store = get_session_store()
+    session = session_store.get_session(session_id)
+
+    if not session:
+        logger.warning(f"Session not found: {session_id}")
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found or expired"
+        )
+
+    # Extract schema from session
+    schema = session["schema"]
+
+    # Build prompt
+    try:
+        prompt = PromptBuilder.build(schema, question)
+    except ValueError as e:
+        logger.error(f"Prompt building failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error building prompt: {str(e)}"
+        )
+
+    # Increment query count
+    session_store.increment_query_count(session_id)
+
+    logger.info(f"Prompt generated successfully for session {session_id}")
+
+    return QueryResponse(
+        session_id=session_id,
+        generated_sql="",  # Will be populated by LLM in TASK 8
+        result=None,
+        error=None
     )
 
 
