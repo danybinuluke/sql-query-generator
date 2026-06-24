@@ -1,142 +1,69 @@
-"""LLM service for SQL generation using pretrained transformer models"""
+"""LLM service for SQL generation using Groq API"""
 
-from pathlib import Path
+import os
 import logging
 import re
 from typing import Optional, Tuple
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
 
 try:
-    from peft import PeftModel
-except ImportError:  # pragma: no cover - dependency handling
-    PeftModel = None
+    from groq import Groq
+except ImportError:
+    Groq = None
 
 logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Service for generating SQL using a pretrained language model"""
+    """Service for generating SQL using Groq API"""
 
     def __init__(
         self,
-        model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        model_name: str = "llama3-70b-8192",
         adapter_path: Optional[str] = None,
         load_in_4bit: bool = False
     ):
         """
-        Initialize LLM service with a pretrained model.
-
-        Args:
-            model_name: HuggingFace model identifier
-            adapter_path: Optional local path to LoRA adapters
-            load_in_4bit: Whether to use 4-bit quantization for GPU inference
+        Initialize LLM service.
+        (adapter_path and load_in_4bit are ignored when using Groq API)
         """
-        self.model_name = model_name
-        self.adapter_path = adapter_path
-        self.load_in_4bit = load_in_4bit
-        self.tokenizer = None
-        self.model = None
-        self.device = None
-        logger.info(
-            "LLMService initialized with model=%s, adapter_path=%s, load_in_4bit=%s",
-            model_name,
-            adapter_path,
-            load_in_4bit
-        )
-
-    @staticmethod
-    def _is_adapter_dir(path: Path) -> bool:
-        """Check whether a directory looks like a PEFT adapter folder."""
-        return (
-            path.is_dir()
-            and (path / "adapter_config.json").exists()
-            and (path / "adapter_model.safetensors").exists()
-        )
-
-    @staticmethod
-    def _resolve_adapter_path(adapter_path: str) -> Optional[Path]:
-        """Resolve an adapter path against common project locations."""
-        raw_path = Path(adapter_path)
-        candidates = [raw_path]
-
-        project_root = Path(__file__).resolve().parents[2]
-        candidates.append(project_root / raw_path)
-
-        # Common fallback: zip extracted directly to `models/` instead of `models/lora_adapters/`.
-        if raw_path.name == "lora_adapters":
-            candidates.append(raw_path.parent)
-            candidates.append(project_root / raw_path.parent)
-
-        for candidate in candidates:
-            if candidate.exists() and LLMService._is_adapter_dir(candidate):
-                return candidate.resolve()
-
-        return None
+        # We default to llama3-70b-8192 if the default was set to something else previously
+        if "llama" not in model_name.lower() and "mixtral" not in model_name.lower() and "gemma" not in model_name.lower():
+            self.model_name = "llama3-70b-8192"
+        else:
+            self.model_name = model_name
+            
+        self.client = None
+        logger.info("LLMService initialized with Groq model=%s", self.model_name)
 
     def load_model(self) -> bool:
         """
-        Load the pretrained model and tokenizer.
+        Initialize the Groq client.
 
         Returns:
             True if successful, False otherwise
         """
         try:
-            logger.info(f"Loading model {self.model_name}...")
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Using device: {self.device}")
+            logger.info("Initializing Groq client...")
+            api_key = os.environ.get("GROQ_API_KEY")
+            
+            if not api_key:
+                logger.error("GROQ_API_KEY environment variable is not set!")
+                return False
+                
+            if Groq is None:
+                logger.error("groq package is not installed. Run `pip install groq`.")
+                return False
 
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-
-            model_kwargs = {}
-            if self.device == "cuda":
-                model_kwargs["device_map"] = "auto"
-                if self.load_in_4bit:
-                    model_kwargs["load_in_4bit"] = True
-                else:
-                    model_kwargs["torch_dtype"] = torch.float16
-            else:
-                if self.load_in_4bit:
-                    logger.warning("4-bit loading requested but CUDA is unavailable. Falling back to CPU fp32.")
-                model_kwargs["torch_dtype"] = torch.float32
-
-            base_model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                **model_kwargs
-            )
-
-            self.model = base_model
-            if self.adapter_path:
-                if PeftModel is None:
-                    raise ImportError(
-                        "peft is not installed. Install it with `pip install peft` "
-                        "to load LoRA adapters."
-                    )
-
-                resolved_adapter_path = self._resolve_adapter_path(self.adapter_path)
-                if not resolved_adapter_path:
-                    raise FileNotFoundError(
-                        f"LoRA adapter path not found: {self.adapter_path}"
-                    )
-
-                logger.info("Applying LoRA adapters from: %s", resolved_adapter_path)
-                self.model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
-
-            self.model.eval()
-
-            logger.info(
-                "Model loaded successfully on %s (adapter=%s)",
-                self.device,
-                bool(self.adapter_path)
-            )
+            self.client = Groq(api_key=api_key)
+            logger.info("Groq client initialized successfully")
             return True
         except Exception as e:
-            logger.error(f"Error loading model: {e}")
+            logger.error(f"Error initializing Groq client: {e}")
             return False
 
-    def generate_sql(self, prompt: str, max_tokens: int = 256) -> Tuple[bool, Optional[str], Optional[str]]:
+    def generate_sql(self, prompt: str, max_tokens: int = 1024) -> Tuple[bool, Optional[str], Optional[str]]:
         """
-        Generate SQL from a prompt using the LLM.
+        Generate SQL from a prompt using the Groq API.
 
         Args:
             prompt: Full prompt including system instructions and schema
@@ -145,27 +72,27 @@ class LLMService:
         Returns:
             Tuple of (success, generated_sql, error_message)
         """
-        if not self.model or not self.tokenizer:
-            return False, None, "Model not loaded"
+        if not self.client:
+            return False, None, "Groq client not initialized"
 
         try:
-            # Tokenize input
-            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            # Generate with Groq API
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                model=self.model_name,
+                temperature=0.1,
+                max_tokens=max_tokens,
+                top_p=0.9,
+                stream=False,
+            )
 
-            # Generate with controlled parameters
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs,
-                    max_new_tokens=max_tokens,
-                    temperature=0.3,
-                    top_p=0.9,
-                    do_sample=True,
-                    num_beams=1,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
-
-            # Decode output
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # Extract response
+            response = chat_completion.choices[0].message.content
 
             # Extract SQL from response
             sql = self._extract_sql(response, prompt)
@@ -176,30 +103,14 @@ class LLMService:
             logger.info(f"Generated SQL: {sql[:100]}...")
             return True, sql, None
 
-        except RuntimeError as e:
-            logger.error(f"CUDA/Runtime error during generation: {e}")
-            return False, None, f"Generation error: {str(e)}"
         except Exception as e:
-            logger.error(f"Unexpected error during generation: {e}")
+            logger.error(f"Unexpected error during Groq generation: {e}")
             return False, None, f"Unexpected error: {str(e)}"
 
     def _extract_sql(self, response: str, original_prompt: str) -> Optional[str]:
         """
         Extract SQL query from model response.
-
-        Attempts to extract SQL from markdown code blocks or raw response.
-
-        Args:
-            response: Full model response
-            original_prompt: Original prompt sent to model
-
-        Returns:
-            Extracted SQL query or None
         """
-        # Remove the original prompt from response if present
-        if response.startswith(original_prompt):
-            response = response[len(original_prompt):].strip()
-
         # Try to extract from ```sql code blocks
         sql_block_match = re.search(r"```sql\s*([\s\S]*?)```", response, re.IGNORECASE)
         if sql_block_match:
@@ -231,21 +142,13 @@ class LLMService:
         return None
 
     def unload_model(self) -> None:
-        """Release model from memory"""
-        try:
-            if self.model:
-                del self.model
-                self.model = None
-            if self.tokenizer:
-                self.tokenizer = None
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            logger.info("Model unloaded from memory")
-        except Exception as e:
-            logger.warning(f"Error unloading model: {e}")
+        """Release client (not strictly needed for API)"""
+        self.client = None
+        logger.info("Groq client disconnected")
 
     def is_loaded(self) -> bool:
-        """Check if model is loaded"""
-        return self.model is not None and self.tokenizer is not None
+        """Check if client is initialized"""
+        return self.client is not None
 
     def __enter__(self):
         """Context manager support"""

@@ -38,13 +38,9 @@ def get_llm_service() -> LLMService:
     """Get or create LLM service instance"""
     global _llm_service
     if _llm_service is None:
-        model_name = os.getenv("LLM_MODEL_NAME") or os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-1.5B")
-        adapter_path = os.getenv("LLM_ADAPTER_PATH", "backend/llm_models").strip() or None
-        load_in_4bit = _parse_bool_env("LLM_LOAD_IN_4BIT", True)
+        model_name = os.getenv("LLM_MODEL_NAME", "llama3-70b-8192")
         _llm_service = LLMService(
-            model_name=model_name,
-            adapter_path=adapter_path,
-            load_in_4bit=load_in_4bit
+            model_name=model_name
         )
     return _llm_service
 
