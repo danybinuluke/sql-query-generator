@@ -9,3 +9,6 @@ pytest-asyncio==0.23.2
 python-dotenv==1.0.0
 transformers==4.38.1
 torch==2.2.0
+peft==0.19.1
+accelerate==1.8.1
+bitsandbytes==0.48.1

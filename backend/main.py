@@ -17,6 +17,14 @@ _session_store: SessionStore = None
 _llm_service: LLMService = None
 
 
+def _parse_bool_env(var_name: str, default: bool) -> bool:
+    """Parse a boolean environment variable with common truthy values."""
+    value = os.getenv(var_name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_session_store() -> SessionStore:
     """Get or create session store instance"""
     global _session_store
@@ -30,8 +38,14 @@ def get_llm_service() -> LLMService:
     """Get or create LLM service instance"""
     global _llm_service
     if _llm_service is None:
-        model_name = os.getenv("LLM_MODEL_NAME", "TinyLlama/TinyLlama-1.1B-Chat-v1.0")
-        _llm_service = LLMService(model_name=model_name)
+        model_name = os.getenv("LLM_MODEL_NAME") or os.getenv("MODEL_NAME", "Qwen/Qwen2.5-Coder-1.5B")
+        adapter_path = os.getenv("LLM_ADAPTER_PATH", "backend/llm_models").strip() or None
+        load_in_4bit = _parse_bool_env("LLM_LOAD_IN_4BIT", True)
+        _llm_service = LLMService(
+            model_name=model_name,
+            adapter_path=adapter_path,
+            load_in_4bit=load_in_4bit
+        )
     return _llm_service
 
 

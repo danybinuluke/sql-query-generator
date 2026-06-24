@@ -1,10 +1,16 @@
 """LLM service for SQL generation using pretrained transformer models"""
 
+from pathlib import Path
 import logging
 import re
 from typing import Optional, Tuple
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
+try:
+    from peft import PeftModel
+except ImportError:  # pragma: no cover - dependency handling
+    PeftModel = None
 
 logger = logging.getLogger(__name__)
 
@@ -12,18 +18,61 @@ logger = logging.getLogger(__name__)
 class LLMService:
     """Service for generating SQL using a pretrained language model"""
 
-    def __init__(self, model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"):
+    def __init__(
+        self,
+        model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        adapter_path: Optional[str] = None,
+        load_in_4bit: bool = False
+    ):
         """
         Initialize LLM service with a pretrained model.
 
         Args:
             model_name: HuggingFace model identifier
+            adapter_path: Optional local path to LoRA adapters
+            load_in_4bit: Whether to use 4-bit quantization for GPU inference
         """
         self.model_name = model_name
+        self.adapter_path = adapter_path
+        self.load_in_4bit = load_in_4bit
         self.tokenizer = None
         self.model = None
         self.device = None
-        logger.info(f"LLMService initialized with model: {model_name}")
+        logger.info(
+            "LLMService initialized with model=%s, adapter_path=%s, load_in_4bit=%s",
+            model_name,
+            adapter_path,
+            load_in_4bit
+        )
+
+    @staticmethod
+    def _is_adapter_dir(path: Path) -> bool:
+        """Check whether a directory looks like a PEFT adapter folder."""
+        return (
+            path.is_dir()
+            and (path / "adapter_config.json").exists()
+            and (path / "adapter_model.safetensors").exists()
+        )
+
+    @staticmethod
+    def _resolve_adapter_path(adapter_path: str) -> Optional[Path]:
+        """Resolve an adapter path against common project locations."""
+        raw_path = Path(adapter_path)
+        candidates = [raw_path]
+
+        project_root = Path(__file__).resolve().parents[2]
+        candidates.append(project_root / raw_path)
+
+        # Common fallback: zip extracted directly to `models/` instead of `models/lora_adapters/`.
+        if raw_path.name == "lora_adapters":
+            candidates.append(raw_path.parent)
+            candidates.append(project_root / raw_path.parent)
+
+        for candidate in candidates:
+            if candidate.exists() and LLMService._is_adapter_dir(candidate):
+                return candidate.resolve()
+
+        return None
 
     def load_model(self) -> bool:
         """
@@ -38,14 +87,48 @@ class LLMService:
             logger.info(f"Using device: {self.device}")
 
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
+
+            model_kwargs = {}
+            if self.device == "cuda":
+                model_kwargs["device_map"] = "auto"
+                if self.load_in_4bit:
+                    model_kwargs["load_in_4bit"] = True
+                else:
+                    model_kwargs["torch_dtype"] = torch.float16
+            else:
+                if self.load_in_4bit:
+                    logger.warning("4-bit loading requested but CUDA is unavailable. Falling back to CPU fp32.")
+                model_kwargs["torch_dtype"] = torch.float32
+
+            base_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                device_map="auto"
+                **model_kwargs
             )
+
+            self.model = base_model
+            if self.adapter_path:
+                if PeftModel is None:
+                    raise ImportError(
+                        "peft is not installed. Install it with `pip install peft` "
+                        "to load LoRA adapters."
+                    )
+
+                resolved_adapter_path = self._resolve_adapter_path(self.adapter_path)
+                if not resolved_adapter_path:
+                    raise FileNotFoundError(
+                        f"LoRA adapter path not found: {self.adapter_path}"
+                    )
+
+                logger.info("Applying LoRA adapters from: %s", resolved_adapter_path)
+                self.model = PeftModel.from_pretrained(base_model, str(resolved_adapter_path))
+
             self.model.eval()
 
-            logger.info(f"Model loaded successfully on {self.device}")
+            logger.info(
+                "Model loaded successfully on %s (adapter=%s)",
+                self.device,
+                bool(self.adapter_path)
+            )
             return True
         except Exception as e:
             logger.error(f"Error loading model: {e}")
