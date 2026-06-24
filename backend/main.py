@@ -38,7 +38,7 @@ def get_llm_service() -> LLMService:
     """Get or create LLM service instance"""
     global _llm_service
     if _llm_service is None:
-        model_name = os.getenv("LLM_MODEL_NAME", "llama3-70b-8192")
+        model_name = os.getenv("LLM_MODEL_NAME", "llama-3.3-70b-versatile")
         _llm_service = LLMService(
             model_name=model_name
         )

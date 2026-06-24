@@ -18,7 +18,7 @@ class LLMService:
 
     def __init__(
         self,
-        model_name: str = "llama3-70b-8192",
+        model_name: str = "llama-3.3-70b-versatile",
         adapter_path: Optional[str] = None,
         load_in_4bit: bool = False
     ):
@@ -26,9 +26,9 @@ class LLMService:
         Initialize LLM service.
         (adapter_path and load_in_4bit are ignored when using Groq API)
         """
-        # We default to llama3-70b-8192 if the default was set to something else previously
+        # We default to llama-3.3-70b-versatile if the default was set to something else previously
         if "llama" not in model_name.lower() and "mixtral" not in model_name.lower() and "gemma" not in model_name.lower():
-            self.model_name = "llama3-70b-8192"
+            self.model_name = "llama-3.3-70b-versatile"
         else:
             self.model_name = model_name
             
