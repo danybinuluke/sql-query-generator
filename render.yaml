@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sql-query-generator-backend
+    env: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 10000
+    # Add any other environment variables you need for the backend here
+    # - key: DATABASE_URL
+    #   sync: false
